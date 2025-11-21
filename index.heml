@@ -1,0 +1,820 @@
+import React, { useState, useEffect, useRef } from 'react';
+import { Play, RotateCcw, Plus, Trash2, Search, ArrowRight, Database, Layers, GitCommit, Network, LayoutList, Box, Edit3, Eye, Sparkles, X, Code, BookOpen, Cpu, MessageSquare, Loader2 } from 'lucide-react';
+
+// 颜色常量
+const COLORS = {
+  primary: '#3b82f6', // blue-500
+  secondary: '#10b981', // green-500
+  danger: '#ef4444', // red-500
+  highlight: '#f59e0b', // amber-500
+  active: '#8b5cf6', // violet-500
+  text: '#1f2937', // gray-800
+  bg: '#f3f4f6', // gray-100
+  stroke: '#9ca3af' // gray-400
+};
+
+const ANIMATION_DELAY = 600; // 动画步长 (ms)
+const apiKey = ""; // Gemini API Key (由环境注入)
+
+// --- 辅助组件 ---
+
+const ArrowMarker = () => (
+  <defs>
+    <marker id="arrowhead" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill={COLORS.stroke} />
+    </marker>
+    <marker id="arrowhead-active" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill={COLORS.active} />
+    </marker>
+  </defs>
+);
+
+const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
+// --- Gemini API 调用函数 ---
+const callGeminiAPI = async (prompt) => {
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`;
+  const payload = {
+    contents: [{ parts: [{ text: prompt }] }]
+  };
+
+  // 指数退避重试逻辑
+  let retries = 0;
+  const maxRetries = 3;
+  
+  while (retries <= maxRetries) {
+    try {
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+
+      if (!response.ok) throw new Error(`API Error: ${response.status}`);
+      
+      const data = await response.json();
+      return data.candidates?.[0]?.content?.parts?.[0]?.text || "AI 没有返回内容";
+    } catch (error) {
+      retries++;
+      if (retries > maxRetries) return "API 调用失败，请稍后再试。";
+      await sleep(Math.pow(2, retries) * 1000);
+    }
+  }
+};
+
+// --- 主应用组件 ---
+
+export default function DataStructureVisualizer() {
+  const [activeTab, setActiveTab] = useState('array');
+  const [inputValue, setInputValue] = useState(''); // 主要值 (Value)
+  const [indexValue, setIndexValue] = useState(''); // 辅助值 (Index/Key)
+  const [message, setMessage] = useState('欢迎！请选择一个数据结构并尝试操作。');
+  const [isAnimating, setIsAnimating] = useState(false);
+  
+  // 动画状态
+  const [activeId, setActiveId] = useState(null); // 当前正在处理的节点/索引 ID
+  const [visitedIds, setVisitedIds] = useState([]); // 已访问过的路径
+  
+  // AI 状态
+  const [showAiPanel, setShowAiPanel] = useState(false);
+  const [aiLoading, setAiLoading] = useState(false);
+  const [aiContent, setAiContent] = useState('');
+  
+  // 数据状态
+  const [arrayData, setArrayData] = useState([10, 25, 30, 45]);
+  const [stackData, setStackData] = useState([10, 20, 30]);
+  const [queueData, setQueueData] = useState([10, 20, 30]);
+  const [listData, setListData] = useState([
+    { id: 1, val: 12, next: 2 },
+    { id: 2, val: 99, next: 3 },
+    { id: 3, val: 37, next: null }
+  ]);
+  const [treeRoot, setTreeRoot] = useState(null); 
+  const [graphNodes, setGraphNodes] = useState([
+    { id: 1, val: 'A', x: 200, y: 100 },
+    { id: 2, val: 'B', x: 100, y: 250 },
+    { id: 3, val: 'C', x: 300, y: 250 },
+  ]);
+  const [graphEdges, setGraphEdges] = useState([
+    { source: 1, target: 2 },
+    { source: 1, target: 3 },
+    { source: 2, target: 3 }
+  ]);
+  const [primitiveVal, setPrimitiveVal] = useState({ type: 'Number', value: 42 });
+
+  // 初始化树
+  useEffect(() => {
+    const initTree = {
+      val: 50, id: 1, x: 400, y: 50,
+      left: { val: 30, id: 2, x: 250, y: 120, left: null, right: null },
+      right: { val: 70, id: 3, x: 550, y: 120, left: null, right: null }
+    };
+    setTreeRoot(initTree);
+  }, []);
+
+  // --- AI 功能处理 ---
+
+  const getCurrentDataSnapshot = () => {
+    switch (activeTab) {
+      case 'array': return JSON.stringify(arrayData);
+      case 'stack': return JSON.stringify(stackData);
+      case 'queue': return JSON.stringify(queueData);
+      case 'list': return JSON.stringify(listData);
+      case 'tree': return JSON.stringify(treeRoot, (key, value) => (key === 'x' || key === 'y' || key === 'id') ? undefined : value);
+      case 'graph': return JSON.stringify({ nodes: graphNodes.map(n => n.val), edges: graphEdges });
+      case 'variable': return JSON.stringify(primitiveVal);
+      default: return '';
+    }
+  };
+
+  const handleAskAI = async (type) => {
+    setAiLoading(true);
+    setAiContent('');
+    if (!showAiPanel) setShowAiPanel(true);
+
+    const dataSnapshot = getCurrentDataSnapshot();
+    let prompt = "";
+    const langInstruction = "请用中文回答，格式清晰，适合编程初学者阅读。";
+
+    switch (type) {
+      case 'explain':
+        prompt = `作为计算机科学导师，请解释当前可视化的数据结构 "${activeTab}"。
+        当前的数据状态是: ${dataSnapshot}。
+        请解释这个数据结构的基本概念，以及当前数据在内存中大致是如何组织的。
+        ${langInstruction}`;
+        break;
+      case 'code':
+        prompt = `请为数据结构 "${activeTab}" 生成一份标准的 JavaScript 或 ES6 class 实现代码。
+        不要包含可视化逻辑，只要数据结构本身的逻辑（如 add, remove, find 方法）。
+        并在注释中解释关键步骤。
+        ${langInstruction}`;
+        break;
+      case 'complexity':
+        prompt = `请分析 "${activeTab}" 数据结构的时间复杂度（Time Complexity）。
+        请以 Markdown 表格形式列出：访问 (Access)、查找 (Search)、插入 (Insertion)、删除 (Deletion) 在平均情况和最坏情况下的 Big O 表示。
+        并简要解释为什么是这样的复杂度。
+        ${langInstruction}`;
+        break;
+      default:
+        prompt = `关于数据结构 "${activeTab}" 的一般性介绍。${langInstruction}`;
+    }
+
+    const result = await callGeminiAPI(prompt);
+    setAiContent(result);
+    setAiLoading(false);
+  };
+
+  // 重置动画状态
+  const clearAnimation = () => {
+    setActiveId(null);
+    setVisitedIds([]);
+    setIsAnimating(false);
+  };
+
+  // --- 操作处理 ---
+
+  const handleAdd = async () => {
+    if (!inputValue || isAnimating) return;
+    const val = isNaN(Number(inputValue)) ? inputValue : Number(inputValue);
+    clearAnimation();
+    
+    switch (activeTab) {
+      case 'variable':
+        const type = typeof val === 'number' ? 'Number' : 'String';
+        setPrimitiveVal({ type, value: val });
+        setMessage(`变量赋值: ${val}`);
+        break;
+      case 'array':
+        if (arrayData.length >= 10) return setMessage('数组已满');
+        // 动画：高亮新位置
+        setIsAnimating(true);
+        setActiveId(arrayData.length); 
+        setMessage(`正在分配索引 ${arrayData.length}...`);
+        await sleep(ANIMATION_DELAY);
+        setArrayData([...arrayData, val]);
+        setMessage(`元素 ${val} 已添加到索引 ${arrayData.length}`);
+        setIsAnimating(false);
+        setActiveId(null);
+        break;
+      case 'stack':
+        if (stackData.length >= 8) return setMessage('栈溢出');
+        setStackData([...stackData, val]);
+        setMessage(`元素 ${val} 入栈`);
+        break;
+      case 'queue':
+        if (queueData.length >= 8) return setMessage('队列已满');
+        setQueueData([...queueData, val]);
+        setMessage(`元素 ${val} 入队`);
+        break;
+      case 'list':
+        const newId = Date.now();
+        const newNode = { id: newId, val: val, next: null };
+        if (listData.length === 0) {
+          setListData([newNode]);
+        } else {
+          setIsAnimating(true);
+          setMessage('遍历链表寻找尾部...');
+          // 模拟遍历动画
+          for (let node of listData) {
+              setActiveId(node.id);
+              await sleep(300);
+          }
+          const newList = [...listData];
+          const lastNode = newList.find(n => n.next === null);
+          if (lastNode) lastNode.next = newId;
+          newList.push(newNode);
+          setListData(newList);
+        }
+        setIsAnimating(false);
+        setActiveId(newId); // Highlight new
+        setMessage(`节点 ${val} 已追加`);
+        setTimeout(() => setActiveId(null), 1000);
+        break;
+      case 'tree':
+        if (typeof val !== 'number') return setMessage('BST 仅支持数字');
+        setIsAnimating(true);
+        setMessage('寻找插入位置...');
+        await animateBSTSearch(treeRoot, val);
+        const newTree = insertBST(treeRoot, val, 400, 50, 200);
+        setTreeRoot({...newTree});
+        setMessage(`节点 ${val} 已插入`);
+        setIsAnimating(false);
+        setActiveId(null);
+        break;
+      case 'graph':
+        const newGNode = { id: Date.now(), val: val, x: Math.random() * 600 + 100, y: Math.random() * 300 + 50 };
+        setGraphNodes([...graphNodes, newGNode]);
+        setMessage(`节点 ${val} 已创建`);
+        break;
+      default: break;
+    }
+    setInputValue('');
+  };
+
+  const handleSearch = async () => {
+      if (!inputValue || isAnimating) return;
+      const target = isNaN(Number(inputValue)) ? inputValue : Number(inputValue);
+      setIsAnimating(true);
+      clearAnimation();
+      setMessage(`开始查找: ${target}`);
+
+      switch(activeTab) {
+          case 'array':
+              for (let i = 0; i < arrayData.length; i++) {
+                  setActiveId(i);
+                  setMessage(`检查索引 ${i}: 值 ${arrayData[i]}...`);
+                  await sleep(ANIMATION_DELAY);
+                  if (arrayData[i] == target) {
+                      setMessage(`找到目标 ${target} 在索引 ${i}！`);
+                      setIsAnimating(false);
+                      return; // Keep highlight
+                  }
+              }
+              setMessage(`未找到 ${target}`);
+              break;
+          case 'list':
+              let current = listData.length > 0 ? listData[0] : null;
+              while(current) {
+                  setActiveId(current.id);
+                  setMessage(`访问节点: ${current.val}`);
+                  await sleep(ANIMATION_DELAY);
+                  if (current.val == target) {
+                      setMessage(`找到目标 ${target}！`);
+                      setIsAnimating(false);
+                      return;
+                  }
+                  current = listData.find(n => n.id === current.next);
+              }
+              setMessage('未找到目标');
+              break;
+          case 'tree':
+              await animateBSTSearch(treeRoot, target);
+              setMessage('查找结束');
+              break;
+          case 'stack':
+          case 'queue':
+               // 简单的线性扫描演示
+               const data = activeTab === 'stack' ? stackData : queueData;
+               for (let i = 0; i < data.length; i++) {
+                   setActiveId(i); // 使用索引作为临时 ID
+                   setMessage(`扫描位置 ${i}: ${data[i]}`);
+                   await sleep(ANIMATION_DELAY);
+                   if (data[i] == target) {
+                       setMessage(`找到 ${target}`);
+                       setIsAnimating(false);
+                       return;
+                   }
+               }
+               setMessage('未找到');
+               break;
+          default:
+              setMessage('当前结构不支持演示查找');
+      }
+      setIsAnimating(false);
+      setTimeout(() => setActiveId(null), 2000);
+  };
+
+  const handleUpdate = async () => {
+      if (isAnimating) return;
+      const newVal = inputValue;
+      const idxOrKey = indexValue;
+      
+      if (!newVal) return setMessage('请输入新值');
+
+      setIsAnimating(true);
+      clearAnimation();
+
+      switch(activeTab) {
+          case 'array':
+              const idx = parseInt(idxOrKey);
+              if (isNaN(idx) || idx < 0 || idx >= arrayData.length) {
+                  setMessage('请输入有效的索引 (Index)');
+                  setIsAnimating(false);
+                  return;
+              }
+              // 动画
+              setActiveId(idx);
+              setMessage(`定位索引 ${idx}...`);
+              await sleep(ANIMATION_DELAY);
+              const newArr = [...arrayData];
+              newArr[idx] = isNaN(Number(newVal)) ? newVal : Number(newVal);
+              setArrayData(newArr);
+              setMessage(`索引 ${idx} 更新为 ${newVal}`);
+              break;
+          case 'list':
+              // Update by searching for value (Index logic is complex for non-array list visual)
+              // Let's assume Input 2 is the "Target Value to Replace"
+              const targetVal = isNaN(Number(idxOrKey)) ? idxOrKey : Number(idxOrKey);
+              setMessage(`搜索值为 ${targetVal} 的节点...`);
+              
+              let foundNode = null;
+              let current = listData.length > 0 ? listData[0] : null;
+              
+              while(current) {
+                  setActiveId(current.id);
+                  await sleep(400);
+                  if (current.val == targetVal) {
+                      foundNode = current;
+                      break;
+                  }
+                  current = listData.find(n => n.id === current.next);
+              }
+
+              if (foundNode) {
+                   setMessage(`更新节点 ${foundNode.id} 的值为 ${newVal}`);
+                   await sleep(400);
+                   const newList = listData.map(n => n.id === foundNode.id ? {...n, val: newVal} : n);
+                   setListData(newList);
+              } else {
+                  setMessage(`未找到值为 ${targetVal} 的节点`);
+              }
+              break;
+           case 'variable':
+               setPrimitiveVal({...primitiveVal, value: newVal});
+               setMessage('变量已更新');
+               break;
+          default:
+              setMessage('此结构暂不支持指定更新，请使用添加/删除');
+      }
+      setIsAnimating(false);
+      setTimeout(() => setActiveId(null), 1500);
+  };
+
+  const handleRemove = () => {
+    if (isAnimating) return;
+    clearAnimation();
+    // ... (保持原有的移除逻辑，稍微简化)
+    switch (activeTab) {
+      case 'variable': setPrimitiveVal({ type: 'Null', value: 'null' }); break;
+      case 'array': 
+        if(arrayData.length===0) return;
+        setArrayData(arrayData.slice(0, -1)); 
+        setMessage('尾部元素已移除');
+        break;
+      case 'stack': 
+        if(stackData.length===0) return;
+        setStackData(stackData.slice(0, -1)); 
+        setMessage('栈顶元素出栈');
+        break;
+      case 'queue':
+        if(queueData.length===0) return;
+        setQueueData(queueData.slice(1));
+        setMessage('队首元素出队');
+        break;
+      case 'list':
+         if(listData.length===0) return;
+         const newL = [...listData];
+         if (newL.length === 1) setListData([]);
+         else {
+             const last = newL.find(n => n.next === null);
+             const prev = newL.find(n => n.next === last.id);
+             if (prev) prev.next = null;
+             setListData(newL.filter(n => n.id !== last.id));
+         }
+         setMessage('尾部节点删除');
+         break;
+      case 'graph':
+          if(graphNodes.length>0) {
+              const rem = graphNodes[graphNodes.length-1];
+              setGraphNodes(graphNodes.slice(0, -1));
+              setGraphEdges(graphEdges.filter(e => e.source !== rem.id && e.target !== rem.id));
+              setMessage('移除了最后一个添加的节点');
+          }
+          break;
+      default: break;
+    }
+  };
+
+  // --- 树辅助 ---
+  const animateBSTSearch = async (node, val) => {
+      if (!node) return;
+      setActiveId(node.id);
+      setVisitedIds(prev => [...prev, node.id]);
+      setMessage(`比较: ${val} vs ${node.val}`);
+      await sleep(ANIMATION_DELAY);
+
+      if (val === node.val) {
+          setMessage('找到目标!');
+          return;
+      }
+      if (val < node.val) {
+          if (node.left) await animateBSTSearch(node.left, val);
+          else setMessage('左子树为空，未找到');
+      } else {
+          if (node.right) await animateBSTSearch(node.right, val);
+          else setMessage('右子树为空，未找到');
+      }
+  };
+
+  const insertBST = (node, val, x, y, offset) => {
+      if (!node) return { val, id: Date.now(), x, y, left: null, right: null };
+      if (val < node.val) node.left = insertBST(node.left, val, x - offset/1.8, y + 60, offset/1.8);
+      else node.right = insertBST(node.right, val, x + offset/1.8, y + 60, offset/1.8);
+      return node;
+  };
+
+  // --- 渲染器 ---
+
+  const getHighlightClass = (id) => {
+      if (activeId === id) return "stroke-amber-500 fill-amber-100 scale-110 transition-all duration-300";
+      if (visitedIds.includes(id)) return "stroke-blue-300 fill-blue-50";
+      return "stroke-blue-500 fill-white transition-all duration-500";
+  };
+
+  const renderVariable = () => (
+    <g transform="translate(350, 150)">
+      <rect x="-60" y="-40" width="120" height="80" rx="10" className={activeId ? "fill-amber-100 stroke-amber-500" : "fill-white stroke-blue-500"} strokeWidth="3" />
+      <text x="0" y="5" textAnchor="middle" className="text-xl font-bold" fill={COLORS.text}>{primitiveVal.value}</text>
+      <text x="0" y="60" textAnchor="middle" className="text-sm" fill={COLORS.stroke}>{primitiveVal.type}</text>
+    </g>
+  );
+
+  const renderArray = () => {
+    const boxSize = 60;
+    const startX = (800 - (arrayData.length * boxSize)) / 2;
+    return (
+      <g transform={`translate(${startX}, 150)`}>
+        {arrayData.map((val, idx) => (
+          <g key={idx} transform={`translate(${idx * boxSize}, 0)`}>
+            <rect 
+                width={boxSize - 5} height={boxSize - 5} rx="4" strokeWidth="2"
+                className={activeId === idx ? "fill-amber-200 stroke-amber-600" : "fill-white stroke-blue-500"}
+                style={{ transition: 'fill 0.3s' }}
+            />
+            <text x={boxSize/2 - 2.5} y={boxSize/2 + 5} textAnchor="middle" className="font-bold">{val}</text>
+            <text x={boxSize/2 - 2.5} y={boxSize + 15} textAnchor="middle" className="text-xs text-gray-400">{idx}</text>
+          </g>
+        ))}
+      </g>
+    );
+  };
+
+  const renderStack = () => {
+      const boxWidth = 100;
+      const boxHeight = 40;
+      const bottomY = 350;
+      return (
+          <g transform="translate(350, 0)">
+              <path d="M -60 50 L -60 360 L 60 360 L 60 50" fill="none" stroke={COLORS.text} strokeWidth="4" strokeLinecap="round" />
+              {stackData.map((val, idx) => {
+                  const yPos = bottomY - 10 - (idx + 1) * (boxHeight + 5);
+                  return (
+                      <g key={idx} transform={`translate(0, ${yPos})`}>
+                          <rect x="-50" y="0" width={boxWidth} height={boxHeight} rx="4" 
+                            className={activeId === idx ? "fill-amber-400" : "fill-orange-400"} 
+                            opacity="0.8" stroke={COLORS.text} />
+                          <text x="0" y={boxHeight/2 + 5} textAnchor="middle" fontWeight="bold" fill="white">{val}</text>
+                      </g>
+                  )
+              })}
+               <text x="90" y={bottomY} className="text-sm" fill={COLORS.stroke}>Bottom</text>
+               <text x="90" y={bottomY - (stackData.length * 45)} className="text-sm" fill={COLORS.stroke}>Top</text>
+          </g>
+      )
+  };
+
+  const renderQueue = () => {
+    const boxSize = 50;
+    return (
+        <g transform="translate(100, 150)">
+            <line x1="0" y1="-10" x2="600" y2="-10" stroke={COLORS.stroke} strokeWidth="2" strokeDasharray="5,5" />
+            <line x1="0" y1="60" x2="600" y2="60" stroke={COLORS.stroke} strokeWidth="2" strokeDasharray="5,5" />
+            <text x="-30" y="25" className="text-sm font-bold" fill={COLORS.danger}>Out</text>
+            <text x="630" y="25" className="text-sm font-bold" fill={COLORS.secondary}>In</text>
+
+            {queueData.map((val, idx) => (
+                <g key={idx} transform={`translate(${idx * (boxSize + 10)}, 0)`}>
+                    <rect width={boxSize} height={boxSize} rx="8" strokeWidth="2" 
+                        className={activeId === idx ? "fill-amber-100 stroke-amber-500" : "fill-blue-50 stroke-blue-500"}
+                    />
+                    <text x={boxSize/2} y={boxSize/2 + 5} textAnchor="middle" className="font-bold">{val}</text>
+                </g>
+            ))}
+        </g>
+    )
+  };
+
+  const renderList = () => {
+      // 简单的可视化排序，不处理复杂的引用循环
+      let ordered = listData; 
+      return (
+          <g transform="translate(50, 150)">
+              {ordered.map((node, idx) => (
+                  <g key={node.id} transform={`translate(${idx * 130}, 0)`} style={{ transition: 'all 0.5s' }}>
+                      <rect x="0" y="0" width="70" height="50" rx="4" strokeWidth="2" 
+                          className={activeId === node.id ? "fill-amber-100 stroke-amber-500 scale-110" : "fill-white stroke-green-500"}
+                      />
+                      <line x1="70" y1="0" x2="70" y2="50" stroke={activeId === node.id ? COLORS.highlight : COLORS.secondary} strokeWidth="2" />
+                      <text x="35" y="30" textAnchor="middle" fontWeight="bold">{node.val}</text>
+                      
+                      {/* Next Pointer */}
+                      <circle cx="85" cy="25" r="4" fill={COLORS.text} />
+                      {idx < ordered.length - 1 && (
+                          <line x1="85" y1="25" x2="130" y2="25" stroke={COLORS.text} strokeWidth="2" markerEnd="url(#arrowhead)" />
+                      )}
+                      {idx === ordered.length - 1 && (
+                           <g opacity="0.5">
+                                <line x1="85" y1="25" x2="110" y2="25" stroke={COLORS.text} strokeWidth="2" />
+                                <line x1="110" y1="15" x2="110" y2="35" stroke={COLORS.text} strokeWidth="2" />
+                                <text x="110" y="50" fontSize="10" textAnchor="middle">NULL</text>
+                           </g>
+                      )}
+                      <text x="35" y="-10" fontSize="10" textAnchor="middle" fill="#999">Addr: {node.id.toString().slice(-3)}</text>
+                  </g>
+              ))}
+              {listData.length > 0 && <text x="35" y="80" textAnchor="middle" fill={COLORS.primary} fontWeight="bold">HEAD</text>}
+          </g>
+      )
+  };
+
+  const renderTreeRecursive = (node) => {
+      if (!node) return null;
+      const isActive = activeId === node.id;
+      const isVisited = visitedIds.includes(node.id);
+      
+      return (
+          <g key={node.id}>
+              {node.left && <line x1={node.x} y1={node.y} x2={node.left.x} y2={node.left.y} stroke={COLORS.stroke} strokeWidth="2" />}
+              {node.right && <line x1={node.x} y1={node.y} x2={node.right.x} y2={node.right.y} stroke={COLORS.stroke} strokeWidth="2" />}
+              
+              {renderTreeRecursive(node.left)}
+              {renderTreeRecursive(node.right)}
+              
+              <g transform={`translate(${node.x}, ${node.y})`}>
+                <circle r="22" strokeWidth={isActive ? 4 : 2} 
+                    className={`${isActive ? "fill-amber-100 stroke-amber-500" : isVisited ? "fill-blue-50 stroke-blue-300" : "fill-white stroke-blue-500"} transition-all duration-300`}
+                />
+                <text y="5" textAnchor="middle" fontWeight="bold" fontSize="14" fill={COLORS.text}>{node.val}</text>
+              </g>
+          </g>
+      );
+  };
+
+  const renderGraph = () => (
+      <g>
+          {graphEdges.map((edge, idx) => {
+              const s = graphNodes.find(n => n.id === edge.source);
+              const t = graphNodes.find(n => n.id === edge.target);
+              if (!s || !t) return null;
+              return <line key={idx} x1={s.x} y1={s.y} x2={t.x} y2={t.y} stroke={COLORS.stroke} strokeWidth="2" />
+          })}
+          {graphNodes.map((node) => (
+              <g key={node.id} transform={`translate(${node.x}, ${node.y})`}>
+                  <circle r="25" strokeWidth="3" 
+                     className={activeId === node.id ? "fill-amber-100 stroke-amber-500" : "fill-white stroke-green-500"}
+                  />
+                  <text y="5" textAnchor="middle" fontWeight="bold">{node.val}</text>
+              </g>
+          ))}
+      </g>
+  );
+
+  // --- 菜单配置 ---
+
+  const TABS = [
+    { id: 'variable', label: '变量', icon: <Box size={18} /> },
+    { id: 'array', label: '数组', icon: <LayoutList size={18} /> },
+    { id: 'list', label: '链表', icon: <GitCommit size={18} /> },
+    { id: 'stack', label: '栈', icon: <Layers size={18} /> },
+    { id: 'queue', label: '队列', icon: <ArrowRight size={18} /> },
+    { id: 'tree', label: '树', icon: <Network size={18} /> },
+    { id: 'graph', label: '图', icon: <Database size={18} /> },
+  ];
+
+  return (
+    <div className="flex h-screen bg-gray-50 text-gray-800 font-sans overflow-hidden relative">
+      <div className="w-64 bg-white border-r border-gray-200 flex flex-col shadow-sm z-10">
+        <div className="p-6 border-b border-gray-100">
+          <h1 className="text-xl font-bold text-blue-600 flex items-center gap-2">
+            <Database className="w-6 h-6" />
+            Data Structs
+          </h1>
+          <p className="text-xs text-gray-400 mt-1">可视化交互演示</p>
+        </div>
+        <nav className="flex-1 overflow-y-auto p-4 space-y-2">
+          {TABS.map(tab => (
+            <button
+              key={tab.id}
+              onClick={() => { setActiveTab(tab.id); setMessage(`已切换至: ${tab.label}`); setInputValue(''); setIndexValue(''); clearAnimation(); }}
+              className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg transition-all duration-200 ${
+                activeTab === tab.id ? 'bg-blue-50 text-blue-600 shadow-sm ring-1 ring-blue-100' : 'hover:bg-gray-100 text-gray-600'
+              }`}
+            >
+              {tab.icon}
+              <span className="font-medium">{tab.label}</span>
+            </button>
+          ))}
+        </nav>
+      </div>
+
+      <div className="flex-1 flex flex-col relative">
+        {/* 控制栏 */}
+        <div className="h-auto py-3 bg-white border-b border-gray-200 flex flex-col md:flex-row items-center px-6 justify-between shadow-sm z-10 gap-3">
+           <h2 className="text-lg font-bold text-gray-700 hidden md:block w-32">
+             {TABS.find(t => t.id === activeTab)?.label} 
+           </h2>
+           
+           <div className="flex flex-wrap items-center gap-2 justify-center md:justify-end flex-1">
+             
+             {/* 输入区域 */}
+             <div className="flex items-center gap-2 bg-gray-100 p-1 rounded-lg border border-gray-200">
+               {(activeTab === 'array' || activeTab === 'list') && (
+                 <input 
+                    type="text" 
+                    value={indexValue}
+                    onChange={(e) => setIndexValue(e.target.value)}
+                    placeholder={activeTab === 'array' ? "Idx" : "Old"}
+                    className="w-16 px-2 py-1.5 bg-white rounded border-none text-sm focus:ring-2 focus:ring-blue-400 outline-none text-center"
+                    title={activeTab === 'array' ? "索引 (用于更新)" : "旧值 (用于查找更新)"}
+                 />
+               )}
+               <input 
+                  type="text" 
+                  value={inputValue}
+                  onChange={(e) => setInputValue(e.target.value)}
+                  placeholder="输入值..."
+                  className="w-24 md:w-32 px-3 py-1.5 bg-white rounded border-none text-sm focus:ring-2 focus:ring-blue-400 outline-none"
+                  onKeyDown={(e) => e.key === 'Enter' && handleAdd()}
+               />
+             </div>
+             
+             {/* 操作按钮组 */}
+             <div className="flex gap-1">
+                <button 
+                  onClick={handleAdd} disabled={isAnimating}
+                  className="flex items-center gap-1 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-300 text-white px-3 py-1.5 rounded-md text-sm transition-colors"
+                  title="添加元素"
+                >
+                  <Plus size={14} /> <span className="hidden lg:inline">添加</span>
+                </button>
+
+                <button 
+                  onClick={handleSearch} disabled={isAnimating}
+                  className="flex items-center gap-1 bg-indigo-500 hover:bg-indigo-600 disabled:bg-indigo-300 text-white px-3 py-1.5 rounded-md text-sm transition-colors"
+                  title="查找值"
+                >
+                  <Search size={14} /> <span className="hidden lg:inline">查找</span>
+                </button>
+
+                {(activeTab === 'array' || activeTab === 'list' || activeTab === 'variable') && (
+                  <button 
+                    onClick={handleUpdate} disabled={isAnimating}
+                    className="flex items-center gap-1 bg-amber-500 hover:bg-amber-600 disabled:bg-amber-300 text-white px-3 py-1.5 rounded-md text-sm transition-colors"
+                    title="更新值"
+                  >
+                    <Edit3 size={14} /> <span className="hidden lg:inline">修改</span>
+                  </button>
+                )}
+                
+                <button 
+                  onClick={handleRemove} disabled={isAnimating}
+                  className="flex items-center gap-1 bg-white border border-red-200 text-red-600 hover:bg-red-50 disabled:opacity-50 px-3 py-1.5 rounded-md text-sm transition-colors"
+                  title="移除元素"
+                >
+                  <Trash2 size={14} />
+                </button>
+             </div>
+
+             <div className="w-px h-6 bg-gray-300 mx-1"></div>
+
+             <button 
+                onClick={() => {
+                   setArrayData([1, 2, 3]); setStackData([]); setQueueData([]); setTreeRoot(null);
+                   setMessage('重置完成'); clearAnimation();
+                }}
+                className="p-1.5 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded-full transition-colors"
+                title="全部重置"
+             >
+                <RotateCcw size={16} />
+             </button>
+             
+             <div className="w-px h-6 bg-gray-300 mx-1"></div>
+
+             {/* AI 助手按钮 */}
+             <button
+                onClick={() => setShowAiPanel(!showAiPanel)}
+                className={`flex items-center gap-1 px-3 py-1.5 rounded-full text-sm font-medium transition-colors border shadow-sm ${showAiPanel ? 'bg-purple-600 text-white border-purple-600' : 'bg-white text-purple-600 border-purple-200 hover:bg-purple-50'}`}
+             >
+                <Sparkles size={14} /> <span className="hidden lg:inline">AI 助教</span>
+             </button>
+           </div>
+        </div>
+
+        {/* 画布 */}
+        <div className="flex-1 bg-gray-50 overflow-hidden relative flex flex-col">
+           <div className="flex-1 overflow-auto flex items-center justify-center p-4">
+              <svg viewBox="0 0 800 400" className="w-full h-full max-w-5xl bg-white rounded-xl shadow-sm border border-gray-200 select-none">
+                <ArrowMarker />
+                <defs>
+                  <pattern id="grid" width="20" height="20" patternUnits="userSpaceOnUse">
+                    <path d="M 20 0 L 0 0 0 20" fill="none" stroke="#f8f9fa" strokeWidth="1"/>
+                  </pattern>
+                </defs>
+                <rect width="100%" height="100%" fill="url(#grid)" />
+
+                {activeTab === 'variable' && renderVariable()}
+                {activeTab === 'array' && renderArray()}
+                {activeTab === 'stack' && renderStack()}
+                {activeTab === 'queue' && renderQueue()}
+                {activeTab === 'list' && renderList()}
+                {activeTab === 'tree' && renderTreeRecursive(treeRoot)}
+                {activeTab === 'graph' && renderGraph()}
+                
+                {activeTab === 'tree' && !treeRoot && (
+                    <text x="400" y="200" textAnchor="middle" fill="#ccc">空树 - 请添加数字</text>
+                )}
+              </svg>
+           </div>
+
+           <div className="h-10 bg-white border-t border-gray-200 flex items-center px-6 text-xs md:text-sm justify-between">
+              <div className="flex items-center gap-2 overflow-hidden whitespace-nowrap">
+                 <span className="font-bold text-gray-500">Log:</span>
+                 <span className="text-blue-600 font-mono">{message}</span>
+              </div>
+              {isAnimating && <span className="text-amber-500 flex items-center gap-1 animate-pulse"><Eye size={12}/> 演示中...</span>}
+           </div>
+
+           {/* AI 侧边栏 */}
+           {showAiPanel && (
+             <div className="absolute top-0 right-0 bottom-0 w-80 bg-white shadow-2xl border-l border-purple-100 flex flex-col z-50 animate-in slide-in-from-right duration-300">
+                <div className="p-4 bg-purple-600 text-white flex justify-between items-center">
+                   <h3 className="font-bold flex items-center gap-2"><Sparkles size={18}/> Gemini 智能助教</h3>
+                   <button onClick={() => setShowAiPanel(false)} className="hover:bg-purple-500 p-1 rounded"><X size={16}/></button>
+                </div>
+                
+                <div className="p-4 grid grid-cols-3 gap-2 border-b border-gray-100 bg-gray-50">
+                   <button onClick={() => handleAskAI('explain')} className="flex flex-col items-center justify-center p-2 bg-white border border-gray-200 rounded hover:bg-purple-50 hover:border-purple-200 transition-colors text-xs gap-1">
+                      <BookOpen size={16} className="text-purple-500"/> 解释结构
+                   </button>
+                   <button onClick={() => handleAskAI('code')} className="flex flex-col items-center justify-center p-2 bg-white border border-gray-200 rounded hover:bg-purple-50 hover:border-purple-200 transition-colors text-xs gap-1">
+                      <Code size={16} className="text-blue-500"/> 生成代码
+                   </button>
+                   <button onClick={() => handleAskAI('complexity')} className="flex flex-col items-center justify-center p-2 bg-white border border-gray-200 rounded hover:bg-purple-50 hover:border-purple-200 transition-colors text-xs gap-1">
+                      <Cpu size={16} className="text-amber-500"/> 复杂度
+                   </button>
+                </div>
+
+                <div className="flex-1 overflow-y-auto p-4 text-sm text-gray-700 font-medium leading-relaxed">
+                   {aiLoading ? (
+                      <div className="flex flex-col items-center justify-center h-40 gap-3 text-gray-400">
+                         <Loader2 className="animate-spin text-purple-500" size={32} />
+                         <p>Gemini 正在思考...</p>
+                      </div>
+                   ) : aiContent ? (
+                      <div className="prose prose-sm prose-purple max-w-none">
+                         <p className="whitespace-pre-wrap">{aiContent}</p>
+                      </div>
+                   ) : (
+                      <div className="text-center text-gray-400 mt-10 px-4">
+                         <MessageSquare className="mx-auto mb-3 opacity-20" size={48}/>
+                         <p>点击上方按钮，让 AI 帮助你学习当前的数据结构。</p>
+                      </div>
+                   )}
+                </div>
+             </div>
+           )}
+        </div>
+      </div>
+    </div>
+  );
+}
